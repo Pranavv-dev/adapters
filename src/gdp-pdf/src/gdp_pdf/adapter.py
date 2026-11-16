@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import re
 import shutil
 from dataclasses import dataclass
@@ -33,6 +34,11 @@ EXCLUDED_TASKS = {
     # any complete answer fails one of them; no response can reach all_pass.
     "3c825f54-77c8-40b5-8bc3-e43c55b68999",
 }
+
+# Parity subset (`--split parity`): 3 tasks per domain, sampled with one
+# random.Random(PARITY_SEED) over the domains in sorted order.
+PARITY_SEED = 0
+PARITY_PER_DOMAIN = 3
 
 # Matches the rubric text columns, e.g. "rubric - 12. criterion".
 _RUBRIC_RE = re.compile(r"rubric\s*-\s*(\d+)\.\s*criterion", re.IGNORECASE)
@@ -78,13 +84,17 @@ class GdpPdfAdapter:
         overwrite: bool = False,
         task_ids: list[str] | None = None,
         oracle_dir: Path | None = None,
+        split: str = "full",
         **kwargs,
     ):
+        if split not in ("full", "parity"):
+            raise ValueError(f"unknown split {split!r}; use 'full' or 'parity'")
         self.output_dir = Path(output_dir)
         self.limit = limit
         self.overwrite = overwrite
         self.task_ids = set(task_ids) if task_ids else None
         self.oracle_dir = Path(oracle_dir) if oracle_dir else None
+        self.split = split
 
     def _download(self, filename: str) -> Path:
         try:
@@ -132,6 +142,21 @@ class GdpPdfAdapter:
             for i, task_id in enumerate(sorted(ids), start=1):
                 names[task_id] = f"{domain}-{i:02d}"
         return names
+
+    @staticmethod
+    def parity_names(names: list[str]) -> set[str]:
+        """The parity subset: PARITY_PER_DOMAIN names from each domain.
+
+        `names` are the Harbor names of the generated (non-excluded) tasks.
+        """
+        by_domain: dict[str, list[str]] = {}
+        for name in names:
+            by_domain.setdefault(re.sub(r"-\d+$", "", name), []).append(name)
+        rng = random.Random(PARITY_SEED)
+        picked: set[str] = set()
+        for domain in sorted(by_domain):
+            picked.update(rng.sample(sorted(by_domain[domain]), PARITY_PER_DOMAIN))
+        return picked
 
     def _oracle_answer(self, task: GdpPdfTask) -> str | None:
         """Read `<oracle_dir>/<task_id>.md`, written by scripts/build_oracle.py."""
@@ -194,6 +219,11 @@ class GdpPdfAdapter:
                 or t.task_id in self.task_ids
             )
         ]
+        if self.split == "parity":
+            parity = self.parity_names(
+                [names[t.task_id] for t in tasks if t.task_id not in EXCLUDED_TASKS]
+            )
+            selected = [t for t in selected if names[t.task_id] in parity]
         if self.limit is not None:
             selected = selected[: self.limit]
 

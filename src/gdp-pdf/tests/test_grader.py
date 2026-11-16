@@ -131,3 +131,39 @@ def test_names_are_stable_and_hide_upstream_ids():
     names = GdpPdfAdapter.harbor_names(tasks)
     assert names == {"aaa": "hr-01", "bbb": "hr-02", "ccc": "stem-research-01"}
     assert names == GdpPdfAdapter.harbor_names(list(reversed(tasks)))
+
+
+# Tasks per domain upstream (100 in total; legal-03 is excluded from the dataset).
+DOMAIN_SIZES = {
+    "construction": 10, "engineering": 10, "finance-investing": 9, "healthcare": 11,
+    "hr": 9, "insurance": 9, "legal": 7, "manufacturing-supply-chains": 10,
+    "real-estate": 10, "stem-research": 15,
+}
+
+# The 30 tasks the parity experiments ran on.
+PARITY_TASKS = {
+    "construction-01", "construction-07", "construction-10",
+    "engineering-05", "engineering-08", "engineering-09",
+    "finance-investing-04", "finance-investing-05", "finance-investing-07",
+    "healthcare-04", "healthcare-06", "healthcare-10",
+    "hr-03", "hr-08", "hr-09",
+    "insurance-02", "insurance-03", "insurance-05",
+    "legal-02", "legal-04", "legal-06",
+    "manufacturing-supply-chains-02", "manufacturing-supply-chains-05",
+    "manufacturing-supply-chains-09",
+    "real-estate-02", "real-estate-06", "real-estate-08",
+    "stem-research-06", "stem-research-07", "stem-research-15",
+}
+
+
+def test_parity_split_is_the_subset_parity_ran_on():
+    names = [f"{d}-{i:02d}" for d, n in DOMAIN_SIZES.items() for i in range(1, n + 1)]
+    names.remove("legal-03")
+    assert len(names) == 99
+    assert GdpPdfAdapter.parity_names(names) == PARITY_TASKS
+    assert GdpPdfAdapter.parity_names(list(reversed(names))) == PARITY_TASKS
+
+
+def test_unknown_split_is_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        GdpPdfAdapter(tmp_path, split="lite")

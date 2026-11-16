@@ -41,6 +41,12 @@ def main() -> None:
         default=None,
         help="Directory of oracle answers named <upstream task_id>.md (see scripts/build_oracle.py)",
     )
+    parser.add_argument(
+        "--split",
+        choices=["full", "parity"],
+        default="full",
+        help="full: all 99 tasks; parity: the 30-task parity subset (3 per domain, seed 0)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
@@ -50,6 +56,7 @@ def main() -> None:
         limit=args.limit,
         task_ids=args.task_ids,
         oracle_dir=args.oracle_dir,
+        split=args.split,
     )
 
     adapter.run()
