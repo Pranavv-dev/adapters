@@ -1,145 +1,117 @@
 ## GDP.pdf → Harbor Adapter
 
-**Notice:**
-1. This is the template file for harbor adapter README. Please follow this structure and fill the contents and/or replace parts if necessary. If a prior version of the adapter code and README exists (i.e., under the `terminal-bench` repo), you could reuse some sections, but make sure they align with the new requirements and commands.
-2. Make sure your default task preparation dir is `datasets/gdp-pdf` instead of other default paths like `tasks/gdp-pdf`. If the prior version is using a different path, please update it accordingly.
-3. Read and understand our tutorial before you go — [agent version](https://www.harborframework.com/docs/datasets/adapters) or [human version](https://www.harborframework.com/docs/datasets/adapters-human).
-
 ## Overview
 
-Describe at a high level what GDP.pdf evaluates. Include:
-- Task types, domains, languages, dataset size/splits
-- Provenance (paper/repo), licensing notes, known constraints
-- Any differences from similarly named benchmarks
-- Explicitly state how many tasks are in this adapter and how that number is derived from the source benchmark
-- Briefly mention the main modifications for adaptation (e.g., prompt changes for agents vs. LLMs, excluded tasks and reasons)
+GDP.pdf tests whether a model can answer professional questions from real PDF documents. Each task pairs a question from a working professional with one PDF (filings, engineering drawings, datasheets, policies, clinical papers and similar) and is graded against an expert-written rubric.
+
+- **Source:** 100 tasks across 10 domains: construction, engineering, finance & investing, healthcare, HR, insurance, legal, manufacturing & supply chains, real estate, and STEM research (7 to 15 tasks each). The language is English.
+- **This adapter:** 99 tasks. legal-03 is excluded because two of its rubric points contradict each other, so no answer can pass both (see [Notes & Caveats](#notes--caveats)).
+- **Rubrics:** 1,269 rubric points across the 99 tasks, 3 to 30 per task (median 11).
+- **Data:** Surge's Hugging Face dataset is no longer public, so the adapter reads a public copy, `cloudybean/GDP.pdf`, pinned at revision `1b73b865` with the parquet's sha256 checked. This is the September 2026 version, MIT licensed.
+- **Main change for agents:** the original harness attaches the PDF to a single model call. Here the PDF sits in the container at `/workspace/document.pdf` and the agent writes its answer to `/workspace/answer.md`. Grading is unchanged.
 
 ## What is GDP.pdf?
 
-Write a short paragraph explaining the original benchmark, goals, and audience. Link to the paper and/or site. Clarify scoring/metrics used in the original.
+GDP.pdf is a benchmark from Surge AI ([paper](https://arxiv.org/abs/2607.11192), [leaderboard](https://surgehq.ai/benchmarks/gdp-pdf)) that measures grounded, multimodal reasoning over professional documents. The questions and rubrics were written by 78 domain experts. In the original setup the PDF is attached to the prompt, the model answers once with no tools, and an LLM judge (Gemini 3.5 Flash) grades each rubric point separately, seeing only the response and that one criterion. It reports two metrics:
+
+- `all_pass`: the share of tasks where every rubric point passes. This is the headline number.
+- `mean_criteria`: the share of rubric points passed, averaged over tasks.
 
 ## Adapter Features
 
-Bullet the notable features your adapter implements. Examples to tailor/remove:
-- Automatic repo/data management (clone, cache, cleanup)
-- Comprehensive task generation (schema extraction, solution validation, id mapping)
-- Dockerized environments; language/toolchain support
-- Evaluation specifics (pytest, judge, diff checks, speedups, resource limits)
-- Prompt adaptations vs. the original harness (if any)
+- **Task data from a pinned source.** The adapter downloads the parquet and PDFs from the pinned Hugging Face revision and checks the parquet's sha256 before generating anything.
+- **PDF tools in the container.** The image is `python:3.12-slim` plus `poppler-utils` (`pdftotext`, `pdftoppm`), because 9 of the 100 PDFs are scans with no text layer and need to be rendered as images.
+- **Surge's grader, ported without Inspect** (`tests/grader.py`):
+  - the judge prompt and JSON schema are verbatim;
+  - one judge call per rubric point, and the judge sees only the answer and that criterion;
+  - strict parsing with 4 retries;
+  - a point passes when its score rounds to at least 1 at 4 decimals.
+- **Rewards.** `reward.json` holds `reward` (1.0 if every point passes, else 0.0, which is `all_pass`) and `mean_criteria`.
+- **Grading in a separate container.** The verifier runs with `environment_mode = "separate"`: Harbor grades in a fresh container from the same image and copies in only `answer.md`, so nothing the agent changes can affect grading.
+- **No leaks to the agent.** Task names look like `hr-03` (domain plus number). Upstream ids, the benchmark name and links are kept out of everything the agent sees.
+- **Parity subset.** `--split parity` generates the 30 tasks used for parity.
 
 ## Generated Task Structure
 
-Show the on-disk layout produced by this adapter. Replace or extend as needed:
 ```
 gdp-pdf/
-├── {task_id}/
-│   ├── task.toml                 # Task configuration
-│   ├── instruction.md            # Task instructions for the agent
-│   ├── environment/              # Container definition
-│   │   └── Dockerfile
-│   ├── solution/                 # Oracle/golden solution (optional if original benchmark doesn't have one)
-│   │   └── solve.sh
-│   └── tests/                    # Test assets and scripts
-│       └── test.sh               # Test execution script
+├── hr-03/
+│   ├── task.toml                 # Task config: 1 CPU, 4 GB RAM, 30 min agent / 15 min verifier timeouts
+│   ├── instruction.md            # The expert's question, plus where the PDF is and where to write the answer
+│   ├── environment/
+│   │   ├── Dockerfile            # python:3.12-slim + poppler-utils + the judge's virtualenv
+│   │   └── document.pdf          # The task's PDF
+│   ├── solution/
+│   │   ├── solve.sh              # Copies the oracle answer to /workspace/answer.md
+│   │   └── answer.md             # Oracle answer (empty unless generated with --oracle-dir)
+│   └── tests/
+│       ├── test.sh               # Runs grader.py
+│       ├── grader.py             # Rubric grader (one judge call per point)
+│       └── rubric.json           # The task's rubric points
 ```
 
-And make sure your adapter code has a task-template directory that includes these files, even if they are empty or dummy. The adapter reads from the `task-template/` directory to replace/add contents and generate task directories correspondingly.
+Adapter code layout:
 
-The adapter is scaffolded as a Python package via `uv init --package`. A typical adapter code directory looks as follows:
 ```
-adapters/gdp-pdf/
+src/gdp-pdf/
 ├── README.md
 ├── adapter_metadata.json
 ├── parity_experiment.json
 ├── pyproject.toml
+├── run_gdp-pdf.yaml
+├── scripts/                      # build_oracle.py: the oracle-answer workflow
+├── tests/                        # grader, naming, parity-split and oracle-builder tests
 └── src/gdp_pdf/
     ├── __init__.py
-    ├── adapter.py
-    ├── main.py
-    └── task-template/
-        ├── task.toml
-        ├── instruction.md
-        ├── environment/
-        │   └── Dockerfile
-        ├── solution/
-        │   └── solve.sh
-        └── tests/
-            └── test.sh
+    ├── adapter.py                # GdpPdfAdapter: download, name, filter, render tasks
+    ├── main.py                   # CLI
+    └── task-template/            # task.toml, instruction.md, environment/, solution/, tests/
 ```
-
-> **Note:** `adapter.py` should define a `<Benchmark>Adapter` class with a `run()` method if possible; `main.py` constructs the adapter and calls `run()` through the standard CLI flags.
-
 
 ## Run Evaluation / Harness
-Harbor Registry & Datasets makes running adapter evaluation easy and flexible.
 
-### Running with Datasets Registry
+Once the dataset is published to the Harbor registry (the harbor-datasets PR is pending), it can be run by name with `harbor run -d`. Until then, generate the tasks locally (see [Usage](#usage-create-task-directories)) and run them from the repository root.
 
- Simply run
-
-```bash
-# Use oracle agent (reference solution)
-uv run harbor run -d gdp-pdf
-
-# Use your specified agent and model
-uv run harbor run -d gdp-pdf -a <agent_name> -m "<model_name>"
-```
-from the harbor root to evaluate on the entire dataset.
-
-> [For adapter creators]: You will need to (1) upload the prepared task directories to https://github.com/laude-institute/harbor-datasets (2) Add your dataset entries to [registry.json](../../../registry.json) following a similar format as others. Only after all the PRs are merged, can you run the above scripts (otherwise the datasets are not yet registered). At development time, use the scripts below to run experiments.
-
-However, if you choose to prepare the task directories locally and/or with custom versions/subsets for evaluation, you may either use `harbor run` or `harbor trial`. Instructions for using the adapter code to prepare task directories are provided in the [Usage](#usage-create-task-directories) session.
-
-### Using Job Configurations
-The example configuration file(s) for the adapter is provided under `harbor/adapters/gdp-pdf`. You may either use `-c path/to/configuration.yaml` or `-p path/to/dataset` to run evaluation on the entire benchmark after preparing the task directories locally.
-
-> [For adapter creators]: Please specify the file(s), e.g., `run_gdp-pdf.yaml`, `run_gdp-pdf-python.yaml` for subsets/versions. Examples of config yaml can be seen from [harbor/examples/configs](../../../examples/configs/).
+The verifier needs judge credentials in the environment: `OPENAI_API_KEY`, `OPENAI_BASE_URL` (any OpenAI-compatible endpoint that serves the judge, e.g. Gemini's `https://generativelanguage.googleapis.com/v1beta/openai/`) and optionally `JUDGE_MODEL` (default `gemini-3.5-flash`).
 
 ```bash
-# From the repository root
-# Run a job with the default adapter configuration
-uv run harbor run -c adapters/gdp-pdf/run_gdp-pdf.yaml -a <agent_name> -m "<model_name>"
+# Oracle on the full dataset (default job config)
+harbor run -c src/gdp-pdf/run_gdp-pdf.yaml
 
-# Or run a job without configuration yaml but instead with locally prepared dataset path
-uv run harbor run -p datasets/gdp-pdf -a <agent_name> -m "<model_name>"
+# Any Harbor agent on a locally generated dataset
+harbor run -p datasets/gdp-pdf -a claude-code -m "anthropic/claude-haiku-4-5"
 
-# Resume a previously started job
-uv run harbor job resume -p /path/to/jobs/directory
+# One task
+harbor run -p datasets/gdp-pdf -i hr-03 -a claude-code -m "anthropic/claude-haiku-4-5"
+
+# Resume a job
+harbor job resume -p /path/to/jobs/directory
 ```
 
-Results are saved in the `jobs/` directory by default (configurable via `jobs_dir` in the YAML config).
-
-### Running Individual Trial
-
-For quick testing or debugging a single task:
-
-```bash
-# Run a single task with oracle (pre-written solution)
-uv run harbor trial start -p datasets/gdp-pdf/<task_id>
-
-# Run a single task with a specific agent and model
-uv run harbor trial start -p datasets/gdp-pdf/<task_id> -a <agent_name> -m "<model_name>"
-```
-
-Trial outputs are saved in the `trials/` directory by default (configurable via `--trials-dir`).
-
+Results go to `jobs/` by default. The oracle only works on tasks generated with `--oracle-dir` (see Notes & Caveats).
 
 ## Usage: Create Task Directories
 
 ```bash
-cd adapters/gdp-pdf
+cd src/gdp-pdf
 uv run gdp-pdf --output-dir ../../datasets/gdp-pdf
+
+# With oracle answers, so the oracle agent can run
+uv run gdp-pdf --output-dir ../../datasets/gdp-pdf --oracle-dir /path/to/oracle-answers
+
+# Only the 30-task parity subset
+uv run gdp-pdf --split parity --output-dir ../../datasets/gdp-pdf-parity
 ```
 
 Available flags:
 - `--output-dir` — Directory to write generated tasks (defaults to `datasets/gdp-pdf` at the repo root)
 - `--limit` — Generate only the first N tasks
 - `--overwrite` — Overwrite existing tasks
-- `--task-ids` — Only generate specific task IDs
+- `--task-ids` — Only generate these tasks (Harbor names like `hr-03`, or upstream task ids)
 - `--split` — `full` (default, all 99 tasks) or `parity` (the 30-task parity subset)
 - `--oracle-dir` — Directory of oracle answers named `<upstream task_id>.md`
 
-Tasks are written to `datasets/gdp-pdf/` with one directory per task. Each task follows the structure shown in ["Generated Task Structure"](#generated-task-structure) above.
+The generated tasks take about 450 MB, almost all of it PDFs.
 
 ## Comparison with Original Benchmark (Parity)
 
@@ -195,53 +167,83 @@ For the parity runs, the same `claude` binary was bind-mounted read-only at `/ro
 
 ## Notes & Caveats
 
-Call out known limitations, failing instances, large downloads, platform caveats, time/memory constraints, or evaluation differences vs. the original benchmark.
+**Excluded task.** legal-03 asks for two lists, but two of its rubric points each say the response should "only identify" one of them. The judge scores one point at a time, so any complete answer fails one of the two. Seven different answer layouts were tried, and each failed at least one "only" point. The rubric is the same in every public copy of the dataset, so the flaw is upstream, and no model can pass this task in Surge's harness either. It is listed in `EXCLUDED_TASKS` in `adapter.py`; every other task keeps its name.
+
+**Oracle answers.** GDP.pdf ships rubrics but no reference answers, so the oracle answers were written with AI help (`scripts/build_oracle.py`):
+- Claude Code drafted each answer from the question, the PDF (page images for the scanned ones) and the rubric.
+- The task's own grader judged the draft, and failed points went back with the judge's reasoning. An answer was accepted only after passing every point 3 times in a row.
+- A separate check compared every claim in each answer against the PDF, since the judge never sees the PDF. About 25 answers had small errors (wrong page numbers, an overstated sentence, a misread chart value); they were fixed and graded again.
+- The oracle passes all 99 tasks with the separate grader.
+- The answers are not in this repo. They ship with the published dataset, and the adapter takes them with `--oracle-dir`. Tasks generated without them have an empty `answer.md`, so the oracle fails on them.
+
+**Rubric points that disagree with the PDF.** While building the oracle, some rubric points turned out to expect things the PDF doesn't support. The oracle answers follow the rubric so they still pass, but a correct agent can lose points on these:
+- The rubric expects something the PDF contradicts:
+  - construction-05: says roof pitch, foundation and framing details are missing, but sheets S1, SD1 and SPEC contain them.
+  - construction-07: a "recessed ceiling speaker" that isn't labelled anywhere.
+  - finance-investing-04: −87.0% where the PDF's figures give −86.6%.
+  - finance-investing-05: says cost of goods sold rose, but it fell 2%.
+  - finance-investing-07: 1,000 bps where the PDF gives 100 bps.
+  - finance-investing-08: treats a year-to-date figure as Q2; the credit-card record is actually Q3 2011.
+  - healthcare-08: PESI 138 as Class IV, but Table 6 puts it in Class V.
+  - hr-02: 42 days, but the service bracket gives about 36.
+  - insurance-02: a definition the policy text actually meets.
+  - legal-01: cites two cases that are not in the PDF.
+  - manufacturing-supply-chains-09: part 316L616, but the PDF prints 361L616.
+  - real-estate-10: A-coil replaced in 2020, but the PDF says 9/2022.
+  - stem-research-02: 40–60%, but the figure shows about 51–65%.
+- The rubric relies on readings the PDF doesn't clearly support: engineering-03 (chart values), hr-08 ("paid" leave isn't stated), insurance-05 (an assumed payment date), insurance-09 (hail damage not visible in the photo), manufacturing-supply-chains-01 (head count not stated), real-estate-04 (what "Pending" means).
+- The rubric's rounding doesn't match the PDF's numbers, though the answers stay within its ranges: manufacturing-supply-chains-06, manufacturing-supply-chains-08, real-estate-08.
+- manufacturing-supply-chains-05 can't be fully done as asked: not every quantity fits in the required time window. The oracle answer schedules what fits and lists the shortfall.
+
+**Points the judge reads inconsistently.** Some "only" and "avoid" points occasionally flip between runs on the same answer. construction-08, manufacturing-supply-chains-09 and stem-research-08 each needed their oracle answer reworded to pass reliably: in each, a required value or label looked to the judge like the thing an "avoid" point forbids.
+
+**Grading differences from Surge's harness.**
+- An empty or missing `answer.md` scores 0 without calling the judge. Surge's harness would send the empty string to the judge.
+- If a rubric point can't be scored after every retry, the verifier exits without writing a reward, so the trial shows as a verifier error. Surge leaves such responses out of `all_pass` instead of scoring them 0.
+
+**Agent vs single completion.** An agent reading a PDF from disk with command-line tools is a different test from a model receiving the PDF natively in one call. Harbor scores are not comparable with the public leaderboard.
 
 ## Installation / Prerequisites
 
-Adapters are managed as standalone uv Python packages. You can add or remove dependencies using `uv add` / `uv remove` from the adapter directory:
-
-```bash
-cd adapters/gdp-pdf
-uv add datasets  # add a dependency
-uv remove datasets  # remove a dependency
-```
-
-List environment setup specific to this adapter (edit as needed):
-- Docker installed and running
-- Harbor installed and working (see main repository README)
-- Python environment with dependencies:
+- Docker, installed and running.
+- Harbor; this adapter was tested with Harbor 0.25.0.
+- Python 3.12+ and `uv`. Install the adapter's dependencies with:
   ```bash
-  cd adapters/gdp-pdf
+  cd src/gdp-pdf
   uv sync
   ```
-- Dataset-specific steps (e.g., creds, downloads):
-  - API keys for agents/models (export as environment variables)
-  - Large docker images, toolchains, or dataset downloads
-  - Any benchmark-specific dependencies
+- Network access to Hugging Face to download the dataset (about 450 MB of PDFs).
+- API keys:
+  - for the agent, e.g. `ANTHROPIC_API_KEY` for Claude Code;
+  - for the judge: `OPENAI_API_KEY`, `OPENAI_BASE_URL` and optionally `JUDGE_MODEL` (see [Run Evaluation](#run-evaluation--harness)).
 
 ## Troubleshooting
 
-List frequent issues and fixes (docker cleanup, timeouts, flaky tests, etc.).
+- **Every trial ends in a verifier error.** The judge settings are probably missing: `OPENAI_API_KEY` must be set on the host, because `[verifier.env]` in `task.toml` passes it in.
+- **An occasional verifier error on one task.** A rubric point couldn't be scored after 5 attempts (judge timeouts or unparseable output). Re-run that task.
+- **Oracle fails with "No reference answer for this task".** The tasks were generated without `--oracle-dir`.
+- **Agents struggle with some PDFs.** 9 PDFs are scans with no text layer, so `pdftotext` returns nothing. Agents need `pdftoppm` to render pages as images.
 
 ## Citation
 
-Provide BibTeX or links to cite the original benchmark (and this adapter if desired):
 ```bibtex
-@article{<key>,
-  title={<benchmark_name>: <paper title>},
-  author={<authors>},
-  year={<year>},
-  url={<paper_or_repo_url>}
+@misc{garre2026gdppdfbenchmarkinggroundedmultimodal,
+      title={GDP.pdf: Benchmarking Grounded Multimodal Reasoning over Professional PDF Documents},
+      author={Suhaas Garre and Emily Ritchie and Sushant Mehta and Edwin Chen},
+      year={2026},
+      eprint={2607.11192},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2607.11192},
 }
 ```
 
 ## Authors & Contributions
-This adapter is developed and maintained by [<your_name>](mailto:<your_email>) from the Harbor team.
 
-**Issues and Contributions:**
-- Submit Issues and Pull Requests to the main repository
-- Follow the project's coding style and commit guidelines
+- **Adapter:** [@Pranavv-dev](https://github.com/Pranavv-dev) (Pranav Vashistha).
+- **Benchmark:** Surge AI (see [Citation](#citation)).
+- **AI use:** Claude Code wrote most of the adapter code and tests, drafted and checked the oracle answers, and ran the parity experiments; the author reviewed the results.
+- Issues and improvements are welcome via the adapters repository.
 
 ## Acknowledgement
 
