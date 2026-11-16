@@ -136,28 +136,62 @@ Available flags:
 - `--limit` — Generate only the first N tasks
 - `--overwrite` — Overwrite existing tasks
 - `--task-ids` — Only generate specific task IDs
+- `--split` — `full` (default, all 99 tasks) or `parity` (the 30-task parity subset)
+- `--oracle-dir` — Directory of oracle answers named `<upstream task_id>.md`
 
 Tasks are written to `datasets/gdp-pdf/` with one directory per task. Each task follows the structure shown in ["Generated Task Structure"](#generated-task-structure) above.
 
 ## Comparison with Original Benchmark (Parity)
 
-Summarize how you validated fidelity to the original benchmark. Include a small table of headline metrics and a pointer to `parity_experiment.json`. Report each score as **mean ± sample SEM**.
+GDP.pdf's own harness (an Inspect eval) sends the PDF to a model in one call and has no agent, so this is Scenario 2. The [fork](https://github.com/Pranavv-dev/gdp-pdf/tree/harbor-parity) adds an agent mode that launches Claude Code exactly the way Harbor 0.25.0's `claude-code` agent does: the same binary, env vars, setup and command. Both sides grade with the same judge (`gemini-3.5-flash`) and Surge's rubric prompt, one judge call per rubric point.
+
+Parity ran on 30 of the 99 tasks, 3 per domain, picked with `random.Random(0)` over the domains in sorted order. `uv run gdp-pdf --split parity` generates exactly these tasks. Each side ran a 5-task sanity check and then 3 runs, one task at a time.
 
 | Agent | Model | Metric | Number of Runs | Dataset Size | Original Benchmark Performance | Harbor Adapter Performance |
 |-------|-------|--------|------------------|--------------|------------------------------|----------------------------|
-| \<agent\>@\<agent_version\> | \<model\> | \<metric\> | \<n\> | \<size\> | \<x% ± y%\> | \<x% ± y%\> |
+| claude-code@2.1.311 | claude-haiku-4-5 | mean_criteria (%) | 3 | 30 (of 99) | 60.21 ± 0.35 | 59.57 ± 2.76 |
+| claude-code@2.1.311 | claude-haiku-4-5 | all_pass (%) | 3 | 30 (of 99) | 6.67 ± 0.00 | 8.89 ± 1.11 |
 
-If there's a prior version parity experiment done in `terminal-bench`:
-- If your parity for Harbor is a direct comparison to the original benchmark (which we recommend if claude-4.5-haiku is easily supported), then you may only include these scores and do not need to include the `terminal-bench` parity.
-- However, if you are comparing to `terminal-bench` adapters, then please include both parity scores to show that "original <--> terminal bench adapter" and then "terminal bench adapter <--> harbor adapter".
+Scores are mean ± sample SEM over the 3 runs. Per run, mean_criteria was 60.73 / 60.36 / 59.55 on the original side and 64.60 / 55.07 / 59.03 on Harbor; all_pass was 6.67 on every original run and 10.00 / 10.00 / 6.67 on Harbor. The run ranges overlap for both metrics. No trial errored on either side (90 per side). Full details are in `parity_experiment.json`.
 
-Reproduction requirements and steps (mandatory):
-- Which repo/fork and commit to use for the original benchmark; which scripts/commands to run; any env variables needed
-- Which commands to run in Harbor to reproduce adapter-side results:
-  ```bash
-  uv run harbor run -c adapters/gdp-pdf/run_gdp-pdf.yaml -a <agent> -m "<model>"
-  ```
-- How to interpret the results/scores; if metrics are non-trivial, briefly explain their computation
+**Metrics** (Surge's two):
+- `mean_criteria`: for each task, the fraction of rubric points the judge passes, averaged over tasks. Harbor writes it to `reward.json` as `mean_criteria`.
+- `all_pass`: the share of tasks where every rubric point passes. This is Harbor's `reward` (1.0 or 0.0 per task).
+
+**Reproduce the original side** with the fork's `harbor-parity` branch (the runs used commit `5dfa939`). Its README has the setup; in short:
+
+```bash
+git clone -b harbor-parity https://github.com/Pranavv-dev/gdp-pdf && cd gdp-pdf
+# CLAUDE_BIN_DIR = dir with the linux-arm64 claude 2.1.311 binary
+# ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL for the agent, PPAPI_API_KEY / PPAPI_BASE_URL for the judge
+uv run inspect eval src/gdp_pdf/agent_task.py@gdp_pdf_agent \
+  --model anthropic/claude-haiku-4-5 \
+  -T agent_model=claude-haiku-4-5 -T agent_version=2.1.311 \
+  -T judge_model=openai-api/ppapi/gemini-3.5-flash \
+  --max-samples 1 --sample-id "$(cut -f2 parity_subset.tsv | paste -sd, -)"
+```
+
+**Reproduce the Harbor side:**
+
+```bash
+cd src/gdp-pdf
+uv run gdp-pdf --split parity --output-dir ../../datasets/gdp-pdf-parity
+cd ../..
+# ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL for the agent
+# OPENAI_API_KEY / OPENAI_BASE_URL for the judge, JUDGE_MODEL=gemini-3.5-flash
+harbor run -p datasets/gdp-pdf-parity -a claude-code -m anthropic/claude-haiku-4-5 \
+  --ak version=2.1.311 -n 1
+```
+
+For the parity runs, the same `claude` binary was bind-mounted read-only at `/root/.local/bin`, so Harbor skipped downloading it in every container. It's the same version either way.
+
+**Notes on the parity runs:**
+- **Model ID.** The guide asks for a dated model ID, but the 2077AI API only serves the alias `claude-haiku-4-5`; the dated `claude-haiku-4-5-20251001` returns `model_not_found`. Both sides used the same alias through the same API on the same days (Nov 15-16, 2026).
+- **Same grading.** Harbor's run-1 answers were re-graded with Surge's own scorer: 64.89%, against 64.60% from Harbor's grader. 98.2% of rubric points (449/457) got the same verdict.
+- **Agent cost.** The original side's agent cost 0.85-0.92x Harbor's. Settings, turns and tool calls match; the difference comes from prompt-cache misses at the API proxy ($1.97 over 90 task-runs) and doesn't change scores.
+- **Separate grader.** After the parity runs, the verifier moved to its own container (`environment_mode = "separate"`), so the agent can't change the grader. What the agent sees is unchanged, and no parity trajectory touched the grader's files, so the results carry over. The oracle passes all 99 tasks with the separate grader.
+- **Attempts not counted.** A 5-task sanity check and a first full run (stopped at original 33/99, Harbor 36/99) used Inspect's own Claude Code wrapper on the original side, which used about 40% more tokens. They were replaced by the Harbor-identical launch, which passed its own 5-task sanity check (one earlier attempt failed to start its container). All attempts are listed in the parity upload.
+- **Cost.** About $81 on the 2077AI key for parity, judge included; the 3 counted runs cost $55.72.
 
 ## Notes & Caveats
 
@@ -211,6 +245,4 @@ This adapter is developed and maintained by [<your_name>](mailto:<your_email>) f
 
 ## Acknowledgement
 
-If you used API keys provided via [adapters/parity_api_instructions.md](../parity_api_instructions.md) for running parity experiments, please include the following acknowledgement:
-
-> API inference compute for running parity tests is generously supported by [2077AI](https://www.2077ai.com/) (https://www.2077ai.com/).
+API inference compute for running parity tests is generously supported by [2077AI](https://www.2077ai.com/) (https://www.2077ai.com/).
