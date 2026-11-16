@@ -14,6 +14,10 @@ difficulty = "hard"
 category = "document-reasoning"
 
 [verifier]
+# Grade in a fresh container from the same image, so nothing the agent changed
+# (the judge virtualenv, /tests, /logs/verifier) carries over. Harbor copies
+# only the artifacts listed above into it.
+environment_mode = "separate"
 # One judge call per rubric point, up to 30 points, each retried up to 5 times.
 timeout_sec = 900.0
 
