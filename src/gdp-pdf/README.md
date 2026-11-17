@@ -126,6 +126,8 @@ Parity ran on 30 of the 99 tasks, 3 per domain, picked with `random.Random(0)` o
 
 Scores are mean ± sample SEM over the 3 runs. Per run, mean_criteria was 60.73 / 60.36 / 59.55 on the original side and 64.60 / 55.07 / 59.03 on Harbor; all_pass was 6.67 on every original run and 10.00 / 10.00 / 6.67 on Harbor. The run ranges overlap for both metrics. No trial errored on either side (90 per side). Full details are in `parity_experiment.json`.
 
+Parity and oracle artifacts: [harborframework/parity-experiments#285](https://huggingface.co/datasets/harborframework/parity-experiments/discussions/285). That repository is over the Hub's file limit, so for now the files are in [PranavVashistha/gdp-pdf-parity-experiments](https://huggingface.co/datasets/PranavVashistha/gdp-pdf-parity-experiments) in the same layout.
+
 **Metrics** (Surge's two):
 - `mean_criteria`: for each task, the fraction of rubric points the judge passes, averaged over tasks. Harbor writes it to `reward.json` as `mean_criteria`.
 - `all_pass`: the share of tasks where every rubric point passes. This is Harbor's `reward` (1.0 or 0.0 per task).
