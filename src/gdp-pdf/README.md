@@ -162,6 +162,7 @@ For the parity runs, the same `claude` binary was bind-mounted read-only at `/ro
 **Notes on the parity runs:**
 - **Model ID.** The guide asks for a dated model ID, but the 2077AI API only serves the alias `claude-haiku-4-5`; the dated `claude-haiku-4-5-20251001` returns `model_not_found`. Both sides used the same alias through the same API on the same days (Nov 15-16, 2026).
 - **Same grading.** Harbor's run-1 answers were re-graded with Surge's own scorer: 64.89%, against 64.60% from Harbor's grader. 98.2% of rubric points (449/457) got the same verdict.
+- **Run-to-run spread.** Harbor's mean_criteria runs span 9.5 points (55.07 to 64.60) against 1.2 on the original side, with the same agent launch on both. The re-grading check above rules out the grader, so the spread is agent-side variance, which 3 runs on 30 tasks cannot pin down. The means differ by 0.64 points and the run ranges overlap.
 - **Agent cost.** The original side's agent cost 0.85-0.92x Harbor's. Settings, turns and tool calls match; the difference comes from prompt-cache misses at the API proxy ($1.97 over 90 task-runs) and doesn't change scores.
 - **Separate grader.** After the parity runs, the verifier moved to its own container (`environment_mode = "separate"`), so the agent can't change the grader. What the agent sees is unchanged, and no parity trajectory touched the grader's files, so the results carry over. The oracle passes all 99 tasks with the separate grader.
 - **Attempts not counted.** A 5-task sanity check and a first full run (stopped at original 33/99, Harbor 36/99) used Inspect's own Claude Code wrapper on the original side, which used about 40% more tokens. They were replaced by the Harbor-identical launch, which passed its own 5-task sanity check (one earlier attempt failed to start its container). All attempts are listed in the parity upload.
@@ -205,6 +206,10 @@ For the parity runs, the same `claude` binary was bind-mounted read-only at `/ro
 
 **Agent vs single completion.** An agent reading a PDF from disk with command-line tools is a different test from a model receiving the PDF natively in one call. Harbor scores are not comparable with the public leaderboard.
 
+**Residual risks.**
+- The agent has network access (it needs the model API), and the rubrics are public on Hugging Face, including in `cloudybean/GDP.pdf`, the copy this adapter pins. An agent that found them could write its answer to the rubric. The instruction doesn't name the benchmark, and the rubric never enters the agent's container.
+- The judge sees only the answer and one criterion, never the question or the PDF, so an answer that addresses the judge directly (for example, claiming it meets the criterion) could sway a verdict. This comes from Surge's harness, which grades the same way. The agent can't change the grader itself, which runs in a separate container.
+
 ## Installation / Prerequisites
 
 - Docker, installed and running.
@@ -222,7 +227,7 @@ For the parity runs, the same `claude` binary was bind-mounted read-only at `/ro
 ## Troubleshooting
 
 - **Every trial ends in a verifier error.** The judge settings are probably missing: `OPENAI_API_KEY` must be set on the host, because `[verifier.env]` in `task.toml` passes it in.
-- **An occasional verifier error on one task.** A rubric point couldn't be scored after 5 attempts (judge timeouts or unparseable output). Re-run that task.
+- **An occasional verifier error on one task.** Either the judge's output for a rubric point failed to parse 5 times in a row, or a judge API call failed (a timeout, rate limit or connection error) after the OpenAI client's own retries. Only parse failures are retried by `grader.py`; an API error ends grading for that trial. Re-run that task.
 - **Oracle fails with "No reference answer for this task".** The tasks were generated without `--oracle-dir`.
 - **Agents struggle with some PDFs.** 9 PDFs are scans with no text layer, so `pdftotext` returns nothing. Agents need `pdftoppm` to render pages as images.
 
