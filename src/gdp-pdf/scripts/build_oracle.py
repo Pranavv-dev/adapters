@@ -32,7 +32,7 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from gdp_pdf.adapter import TEMPLATE_DIR, GdpPdfAdapter, GdpPdfTask
+from gdp_pdf.adapter import EXCLUDED_TASKS, TEMPLATE_DIR, GdpPdfAdapter, GdpPdfTask
 
 logger = logging.getLogger("build_oracle")
 
@@ -149,6 +149,18 @@ async def build_one(
     return None, log
 
 
+
+def select_tasks(
+    tasks: list[GdpPdfTask], names: dict[str, str], task_ids: list[str] | None, limit: int | None
+) -> list[GdpPdfTask]:
+    """Tasks to build answers for, in name order. Excluded tasks are never in the dataset, so they get no answer."""
+    return [
+        t
+        for t in sorted(tasks, key=lambda t: names[t.task_id])
+        if t.task_id not in EXCLUDED_TASKS
+        and (task_ids is None or names[t.task_id] in task_ids or t.task_id in task_ids)
+    ][:limit]
+
 async def main_async(args) -> int:
     writer = AsyncOpenAI(
         api_key=os.environ["WRITER_API_KEY"], base_url=os.environ.get("WRITER_BASE_URL") or None
@@ -162,11 +174,7 @@ async def main_async(args) -> int:
     adapter = GdpPdfAdapter(args.out_dir, task_ids=args.task_ids)
     tasks = adapter.load_tasks()
     names = adapter.harbor_names(tasks)
-    selected = [
-        t
-        for t in sorted(tasks, key=lambda t: names[t.task_id])
-        if args.task_ids is None or names[t.task_id] in args.task_ids or t.task_id in args.task_ids
-    ][: args.limit]
+    selected = select_tasks(tasks, names, args.task_ids, args.limit)
 
     (args.out_dir / "logs").mkdir(parents=True, exist_ok=True)
     gate = asyncio.Semaphore(args.concurrency)

@@ -83,3 +83,11 @@ def test_adapter_reads_oracle_dir(tmp_path):
     assert GdpPdfAdapter(tmp_path / "out")._oracle_answer(TASK) is None
     other = GdpPdfTask("t2", "HR", "p", "y.pdf", [])
     assert adapter._oracle_answer(other) is None
+
+
+def test_select_tasks_skips_excluded():
+    excluded = next(iter(build_oracle.EXCLUDED_TASKS))
+    tasks = [SimpleNamespace(task_id=excluded), SimpleNamespace(task_id="kept")]
+    names = {excluded: "legal-03", "kept": "legal-04"}
+    assert [t.task_id for t in build_oracle.select_tasks(tasks, names, None, None)] == ["kept"]
+    assert build_oracle.select_tasks(tasks, names, ["legal-03"], None) == []
