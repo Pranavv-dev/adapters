@@ -1,4 +1,4 @@
-## GDP.pdf → Harbor Adapter
+# GDP.pdf → Harbor Adapter
 
 ## Overview
 
@@ -59,7 +59,7 @@ src/gdp-pdf/
 ├── parity_experiment.json
 ├── pyproject.toml
 ├── run_gdp-pdf.yaml
-├── scripts/                      # build_oracle.py: the oracle-answer workflow
+├── scripts/                      # build_oracle.py (draft-and-grade loop), oracle_prompts/ (oracle writer and checker instructions)
 ├── tests/                        # grader, naming, parity-split and oracle-builder tests
 └── src/gdp_pdf/
     ├── __init__.py
@@ -126,7 +126,7 @@ Parity ran on 30 of the 99 tasks, 3 per domain, picked with `random.Random(0)` o
 
 Scores are mean ± sample SEM over the 3 runs. Per run, mean_criteria was 60.73 / 60.36 / 59.55 on the original side and 64.60 / 55.07 / 59.03 on Harbor; all_pass was 6.67 on every original run and 10.00 / 10.00 / 6.67 on Harbor. The run ranges overlap for both metrics. No trial errored on either side (90 per side). Full details are in `parity_experiment.json`.
 
-Parity and oracle artifacts: [harborframework/parity-experiments#285](https://huggingface.co/datasets/harborframework/parity-experiments/discussions/285). That repository is over the Hub's file limit, so for now the files are in [PranavVashistha/gdp-pdf-parity-experiments](https://huggingface.co/datasets/PranavVashistha/gdp-pdf-parity-experiments) in the same layout.
+Parity and oracle artifacts: [harborframework/parity-experiments#285](https://huggingface.co/datasets/harborframework/parity-experiments/discussions/285). That repository is over the Hub's file limit, so for now the files are in [PranavVashistha/gdp-pdf-parity-experiments](https://huggingface.co/datasets/PranavVashistha/gdp-pdf-parity-experiments/tree/5a998002fb36cee50b15d695ffe1344cb90b5a13) in the same layout, pinned at revision `5a99800`. They'll move to #285 once that repository accepts uploads.
 
 **Metrics** (Surge's two):
 - `mean_criteria`: for each task, the fraction of rubric points the judge passes, averaged over tasks. Harbor writes it to `reward.json` as `mean_criteria`.
@@ -157,14 +157,24 @@ harbor run -p datasets/gdp-pdf-parity -a claude-code -m anthropic/claude-haiku-4
   --ak version=2.1.311 -n 1
 ```
 
-For the parity runs, the same `claude` binary was bind-mounted read-only at `/root/.local/bin`, so Harbor skipped downloading it in every container. It's the same version either way.
+The parity runs used Harbor 0.25.0 (commit `fdba28f`) and also bind-mounted the same `claude` 2.1.311 binary read-only at `/root/.local/bin`, so Harbor skipped downloading it in every container. To reproduce them exactly, add that mount to the job config (`environment.mounts`, Harbor 0.25.0 syntax). The full job config is `config.yaml` in the parity upload, where this block appears commented out with the local path removed:
+
+```yaml
+environment:
+  type: docker
+  mounts:
+    - type: bind
+      source: /path/to/claude-code-2.1.311   # directory holding the claude binary
+      target: /root/.local/bin
+      read_only: true
+```
 
 **Notes on the parity runs:**
 - **Model ID.** The guide asks for a dated model ID, but the 2077AI API only serves the alias `claude-haiku-4-5`; the dated `claude-haiku-4-5-20251001` returns `model_not_found`. Both sides used the same alias through the same API on the same days (Nov 15-16, 2026).
 - **Same grading.** Harbor's run-1 answers were re-graded with Surge's own scorer: 64.89%, against 64.60% from Harbor's grader. 98.2% of rubric points (449/457) got the same verdict.
 - **Run-to-run spread.** Harbor's mean_criteria runs span 9.5 points (55.07 to 64.60) against 1.2 on the original side, with the same agent launch on both. The re-grading check above rules out the grader, so the spread is agent-side variance, which 3 runs on 30 tasks cannot pin down. The means differ by 0.64 points and the run ranges overlap.
 - **Agent cost.** The original side's agent cost 0.85-0.92x Harbor's. Settings, turns and tool calls match; the difference comes from prompt-cache misses at the API proxy ($1.97 over 90 task-runs) and doesn't change scores.
-- **Separate grader.** After the parity runs, the verifier moved to its own container (`environment_mode = "separate"`), so the agent can't change the grader. What the agent sees is unchanged, and no parity trajectory touched the grader's files, so the results carry over. The oracle passes all 99 tasks with the separate grader.
+- **Grader container differs from the shipped one.** The parity runs graded inside the agent's container. Afterwards the verifier moved to its own container (`environment_mode = "separate"`), which is what this adapter ships, so the agent can't change the grader. Parity was not re-run after that change; only the oracle was, and it passes all 99 tasks with the separate grader. What the agent sees (instruction, PDF, image) is the same in both setups, and no parity trajectory touched the grader's files, so the results should carry over.
 - **Attempts not counted.** A 5-task sanity check and a first full run (stopped at original 33/99, Harbor 36/99) used Inspect's own Claude Code wrapper on the original side, which used about 40% more tokens. They were replaced by the Harbor-identical launch, which passed its own 5-task sanity check (one earlier attempt failed to start its container). All attempts are listed in the parity upload.
 - **Cost.** About $81 on the 2077AI key for parity, judge included; the 3 counted runs cost $55.72.
 
@@ -172,12 +182,13 @@ For the parity runs, the same `claude` binary was bind-mounted read-only at `/ro
 
 **Excluded task.** legal-03 asks for two lists, but two of its rubric points each say the response should "only identify" one of them. The judge scores one point at a time, so any complete answer fails one of the two. Seven different answer layouts were tried, and each failed at least one "only" point. The rubric is the same in every public copy of the dataset, so the flaw is upstream, and no model can pass this task in Surge's harness either. It is listed in `EXCLUDED_TASKS` in `adapter.py`; every other task keeps its name.
 
-**Oracle answers.** GDP.pdf ships rubrics but no reference answers, so the oracle answers were written with AI help (`scripts/build_oracle.py`):
-- Claude Code drafted each answer from the question, the PDF (page images for the scanned ones) and the rubric.
+**Oracle answers.** GDP.pdf ships rubrics but no reference answers, so the oracle answers were written with AI help. Most steps were run by hand with Claude Code, so they can't be re-run from this repo end to end:
+- A Claude Code subagent drafted each answer from the question, the PDF (page images for the scanned ones) and the rubric. Its instructions are in `scripts/oracle_prompts/writer.md`.
 - The task's own grader judged the draft, and failed points went back with the judge's reasoning. An answer was accepted only after passing every point 3 times in a row.
-- A separate check compared every claim in each answer against the PDF, since the judge never sees the PDF. About 25 answers had small errors (wrong page numbers, an overstated sentence, a misread chart value); they were fixed and graded again.
+- A second subagent checked every claim in each answer against the PDF pages, since the judge never sees the PDF (`scripts/oracle_prompts/verifier.md`). About 25 answers had small errors (wrong page numbers, an overstated sentence, a misread chart value); they were fixed by hand and graded again.
+- `scripts/build_oracle.py` automates only the draft-and-grade loop, with an API model working from the PDF's extracted text. It is not how the shipped answers were made and gives first drafts, which still need the claim check above. It skips excluded tasks.
 - The oracle passes all 99 tasks with the separate grader.
-- The answers are not in this repo. They ship with the published dataset, and the adapter takes them with `--oracle-dir`. Tasks generated without them have an empty `answer.md`, so the oracle fails on them.
+- The answers are not in this repo. They ship with the published dataset, and the adapter takes them with `--oracle-dir`. The exact answers that were tested are in the dataset PR at a fixed commit: [`datasets/gdp-pdf/<task>/solution/answer.md` @ `5057283`](https://github.com/Pranavv-dev/harbor-datasets/tree/5057283a4c8477d9ed0ed34aa20a446e516af779/datasets/gdp-pdf). Tasks generated without them have an empty `answer.md`, so the oracle fails on them.
 
 **Rubric points that disagree with the PDF.** While building the oracle, some rubric points turned out to expect things the PDF doesn't support. The oracle answers follow the rubric so they still pass, but a correct agent can lose points on these:
 - The rubric expects something the PDF contradicts:
@@ -213,7 +224,7 @@ For the parity runs, the same `claude` binary was bind-mounted read-only at `/ro
 ## Installation / Prerequisites
 
 - Docker, installed and running.
-- Harbor; this adapter was tested with Harbor 0.25.0.
+- Harbor 0.22.0 or later. The tasks grade in a separate container (`[verifier] environment_mode = "separate"` with the top-level `artifacts` list in `task.toml`), which Harbor supports in 0.22.0 and later (checked in 0.22.0, 0.25.0 and 0.26.0); `schema_version` is the key name Harbor uses (it renames an older `version` key to it). This adapter was tested with Harbor 0.25.0 (commit `fdba28f`).
 - Python 3.12+ and `uv`. Install the adapter's dependencies with:
   ```bash
   cd src/gdp-pdf
